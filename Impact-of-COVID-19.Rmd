@@ -1,0 +1,267 @@
+---
+title: "Impact-of-COVID-19-on-mortality-rate-of-four-diseases"
+author: "Yutong Yuan"
+date: "01/11/2022"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE, results='hide'}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages("R.utils")
+library(R.utils, quietly = TRUE)
+#install.packages("Pmisc", repos="http://R-Forge.R-project.org")
+library("Pmisc", quietly = TRUE)
+```
+
+```{r}
+deadFile = Pmisc::downloadIfOld("https://www150.statcan.gc.ca/n1/tbl/csv/13100810-eng.zip") 
+(deadFileCsv = deadFile[which.max(file.info(deadFile)$size)])
+x = read.csv(deadFileCsv) 
+x[1:2, ]
+x$date = as.Date(as.character(x[[grep("DATE", names(x))]])) 
+x$province = gsub("[,].*", "", x$GEO)
+# remove 2021 data, which appears incomplete
+x = x[x$date < as.Date("2020/12/01") & x$province =="Ontario", ]
+for (D in c("heart", "neoplasms", "respiratory", "Accidents")) {
+  plot(x[grep(D, x$Cause), c("date", "VALUE")], ylab = D)
+  abline(v = as.Date("2020/03/17")) }
+```
+#heart
+```{r}
+dateSeq = sort(unique(x$date)) 
+table(diff(dateSeq))
+dateSeqInt = as.integer(dateSeq)
+x$dateInt = x$dateIid = as.integer(x$date)
+x$cos12 = cos(2 * pi * x$dateInt/365.25)
+x$sin12 = sin(2 * pi * x$dateInt/365.25)
+x$sin6 = sin(2 * 2 * pi * x$dateInt/365.25)
+x$cos6 = cos(2 * 2 * pi * x$dateInt/365.25) 
+x$dayOfYear = as.Date(gsub("^[[:digit:]]+", "0000",x$date))
+x$christmasBreak = (x$dayOfYear >= as.Date("0000/12/21")) |(x$dayOfYear <= as.Date("0000/01/12"))
+xSub = x[grepl("heart", x$Cause, ignore.case = TRUE) & x$province == "Ontario", ]
+xPreCovid = xSub[xSub$date < as.Date("2020/02/01") & (!xSub$christmasBreak), ]
+
+library("INLA")
+
+resHere = inla(VALUE ~ cos12 + cos6 + sin12 + sin6 + 
+                 f(dateInt, model = "rw2", values = dateSeqInt,prior = "pc.prec", param = c(0.001, 0.5)) + 
+                 f(dateIid, values = dateSeqInt, prior = "pc.prec", param = c(0.0001, 0.5)), 
+               data = xPreCovid, family = "poisson", 
+               control.compute = list(config = TRUE), control.predictor = list(compute = TRUE))
+```
+
+```{r}
+matplot(resHere$.args$data$date, resHere$summary.fitted[, paste0(c(0.025, 0.975, 0.5), "quant")], type = "l",lty = c(2, 2, 1), col = "black", log = "y", ylim = range(xSub$VALUE))
+points(xSub$date, xSub$VALUE, col = "red") 
+points(xPreCovid$date, xPreCovid$VALUE, col = "blue") 
+
+matplot(dateSeq, resHere$summary.random$dateInt[, paste0(c(0.025,0.975, 0.5), "quant")], type = "l", lty = c(2,2, 1), col = "black")
+toPredict = cbind(`(Intercept):1` = 1, `cos12:1` = cos(2 *pi * dateSeqInt/365.25), `sin12:1` = sin(2 * pi * dateSeqInt/365.25), `cos6:1` = cos(2 * pi * dateSeqInt *2/365.25),`sin6:1` = sin(2 * pi * dateSeqInt *2/365.25))
+dateIntSeq = paste0("dateInt:", 1:length(dateSeqInt))
+dateIidSeq = paste0("dateIid:", 1:length(dateSeqInt))
+set.seed(123456)
+resSample = inla.posterior.sample(n = 100, resHere) 
+resSampleFitted = lapply(resSample, function(xx) {toPredict %*% xx$latent[colnames(toPredict), ] + xx$latent[dateIntSeq, ] + xx$latent[dateIidSeq,]})
+resSampleFitted = do.call(cbind, resSampleFitted) 
+resSampleLambda = exp(resSampleFitted)
+resSampleCount = matrix(rpois(length(resSampleLambda),
+                              resSampleLambda), nrow(resSampleLambda), ncol(resSampleLambda)) 
+matplot(dateSeq, resSampleCount, col ="#00000010",type = "l", lty = 1, log = "y")
+
+points(xSub[, c("date", "VALUE")], col = "red") 
+abline(v = as.Date("2020/03/01"), col = "yellow") 
+is2020 = dateSeq[dateSeq >= as.Date("2020/2/1")] 
+sample2020 = resSampleCount[match(is2020, dateSeq),]
+count2020 = xSub[match(is2020, xSub$date), "VALUE"]
+excess2020 = count2020 - sample2020
+matplot(is2020, excess2020, type = "l", lty = 1, col = "#0000FF10",
+        ylim = range(-10, quantile(excess2020, c(0.1, 0.999)))) 
+matlines(is2020, t(apply(excess2020, 1, quantile, prob = c(0.1,0.9))), col = "black", lty = 2) 
+abline(h = 0) 
+quantile(apply(excess2020, 1, sum))
+```
+#neoplasms
+```{r}
+dateSeq = sort(unique(x$date)) 
+table(diff(dateSeq))
+dateSeqInt = as.integer(dateSeq)
+x$dateInt = x$dateIid = as.integer(x$date)
+x$cos12 = cos(2 * pi * x$dateInt/365.25)
+x$sin12 = sin(2 * pi * x$dateInt/365.25)
+x$sin6 = sin(2 * 2 * pi * x$dateInt/365.25)
+x$cos6 = cos(2 * 2 * pi * x$dateInt/365.25) 
+x$dayOfYear = as.Date(gsub("^[[:digit:]]+", "0000",x$date))
+x$christmasBreak = (x$dayOfYear >= as.Date("0000/12/21")) |(x$dayOfYear <= as.Date("0000/01/12"))
+xSub = x[grepl("neoplasms", x$Cause, ignore.case = TRUE) & x$province == "Ontario", ]
+xPreCovid = xSub[xSub$date < as.Date("2020/02/01") & (!xSub$christmasBreak), ]
+
+#library("INLA")
+resHere = inla(VALUE ~ cos12 + cos6 + sin12 + sin6 + 
+                 f(dateInt, model = "rw2", values = dateSeqInt,prior = "pc.prec", param = c(0.001, 0.5)) + 
+                 f(dateIid, values = dateSeqInt, prior = "pc.prec", param = c(0.0001, 0.5)), 
+               data = xPreCovid, family = "poisson", 
+               control.compute = list(config = TRUE), control.predictor = list(compute = TRUE))
+```
+
+```{r}
+matplot(resHere$.args$data$date, resHere$summary.fitted[, paste0(c(0.025, 0.975, 0.5), "quant")], type = "l",lty = c(2, 2, 1), col = "black", log = "y", ylim = range(xSub$VALUE))
+points(xSub$date, xSub$VALUE, col = "red") 
+points(xPreCovid$date, xPreCovid$VALUE, col = "blue") 
+
+matplot(dateSeq, resHere$summary.random$dateInt[, paste0(c(0.025,0.975, 0.5), "quant")], type = "l", lty = c(2,2, 1), col = "black")
+toPredict = cbind(`(Intercept):1` = 1, `cos12:1` = cos(2 *pi * dateSeqInt/365.25), `sin12:1` = sin(2 * pi * dateSeqInt/365.25), `cos6:1` = cos(2 * pi * dateSeqInt *2/365.25),`sin6:1` = sin(2 * pi * dateSeqInt *2/365.25))
+dateIntSeq = paste0("dateInt:", 1:length(dateSeqInt))
+dateIidSeq = paste0("dateIid:", 1:length(dateSeqInt))
+set.seed(123456)
+resSample = inla.posterior.sample(n = 100, resHere) 
+resSampleFitted = lapply(resSample, function(xx) {toPredict %*% xx$latent[colnames(toPredict), ] + xx$latent[dateIntSeq, ] + xx$latent[dateIidSeq,]})
+resSampleFitted = do.call(cbind, resSampleFitted) 
+resSampleLambda = exp(resSampleFitted)
+resSampleCount = matrix(rpois(length(resSampleLambda),
+                              resSampleLambda), nrow(resSampleLambda), ncol(resSampleLambda)) 
+matplot(dateSeq, resSampleCount, col ="#00000010",type = "l", lty = 1, log = "y")
+
+points(xSub[, c("date", "VALUE")], col = "red") 
+abline(v = as.Date("2020/03/01"), col = "yellow") 
+is2020 = dateSeq[dateSeq >= as.Date("2020/2/1")] 
+sample2020 = resSampleCount[match(is2020, dateSeq),]
+count2020 = xSub[match(is2020, xSub$date), "VALUE"]
+excess2020 = count2020 - sample2020
+matplot(is2020, excess2020, type = "l", lty = 1, col = "#0000FF10",
+        ylim = range(-10, quantile(excess2020, c(0.1, 0.999)))) 
+matlines(is2020, t(apply(excess2020, 1, quantile, prob = c(0.1,0.9))), col = "black", lty = 2) 
+abline(h = 0) 
+quantile(apply(excess2020, 1, sum))
+```
+
+#respiratory
+```{r}
+dateSeq = sort(unique(x$date)) 
+table(diff(dateSeq))
+dateSeqInt = as.integer(dateSeq)
+x$dateInt = x$dateIid = as.integer(x$date)
+x$cos12 = cos(2 * pi * x$dateInt/365.25)
+x$sin12 = sin(2 * pi * x$dateInt/365.25)
+x$sin6 = sin(2 * 2 * pi * x$dateInt/365.25)
+x$cos6 = cos(2 * 2 * pi * x$dateInt/365.25) 
+x$dayOfYear = as.Date(gsub("^[[:digit:]]+", "0000",x$date))
+x$christmasBreak = (x$dayOfYear >= as.Date("0000/12/21")) |(x$dayOfYear <= as.Date("0000/01/12"))
+xSub = x[grepl("respiratory", x$Cause, ignore.case = TRUE) & x$province == "Ontario", ]
+xPreCovid = xSub[xSub$date < as.Date("2020/02/01") & (!xSub$christmasBreak), ]
+
+#library("INLA")
+resHere = inla(VALUE ~ cos12 + cos6 + sin12 + sin6 + 
+                 f(dateInt, model = "rw2", values = dateSeqInt,prior = "pc.prec", param = c(0.001, 0.5)) + 
+                 f(dateIid, values = dateSeqInt, prior = "pc.prec", param = c(0.0001, 0.5)), 
+               data = xPreCovid, family = "poisson", 
+               control.compute = list(config = TRUE), control.predictor = list(compute = TRUE))
+```
+
+```{r}
+matplot(resHere$.args$data$date, resHere$summary.fitted[, paste0(c(0.025, 0.975, 0.5), "quant")], type = "l",lty = c(2, 2, 1), col = "black", log = "y", ylim = range(xSub$VALUE))
+points(xSub$date, xSub$VALUE, col = "red") 
+points(xPreCovid$date, xPreCovid$VALUE, col = "blue") 
+
+matplot(dateSeq, resHere$summary.random$dateInt[, paste0(c(0.025,0.975, 0.5), "quant")], type = "l", lty = c(2,2, 1), col = "black")
+toPredict = cbind(`(Intercept):1` = 1, `cos12:1` = cos(2 *pi * dateSeqInt/365.25), `sin12:1` = sin(2 * pi * dateSeqInt/365.25), `cos6:1` = cos(2 * pi * dateSeqInt *2/365.25),`sin6:1` = sin(2 * pi * dateSeqInt *2/365.25))
+dateIntSeq = paste0("dateInt:", 1:length(dateSeqInt))
+dateIidSeq = paste0("dateIid:", 1:length(dateSeqInt))
+set.seed(123456)
+resSample = inla.posterior.sample(n = 100, resHere) 
+resSampleFitted = lapply(resSample, function(xx) {toPredict %*% xx$latent[colnames(toPredict), ] + xx$latent[dateIntSeq, ] + xx$latent[dateIidSeq,]})
+resSampleFitted = do.call(cbind, resSampleFitted) 
+resSampleLambda = exp(resSampleFitted)
+resSampleCount = matrix(rpois(length(resSampleLambda),
+                              resSampleLambda), nrow(resSampleLambda), ncol(resSampleLambda)) 
+matplot(dateSeq, resSampleCount, col ="#00000010",type = "l", lty = 1, log = "y")
+
+points(xSub[, c("date", "VALUE")], col = "red") 
+abline(v = as.Date("2020/03/01"), col = "yellow") 
+is2020 = dateSeq[dateSeq >= as.Date("2020/2/1")] 
+sample2020 = resSampleCount[match(is2020, dateSeq),]
+count2020 = xSub[match(is2020, xSub$date), "VALUE"]
+excess2020 = count2020 - sample2020
+matplot(is2020, excess2020, type = "l", lty = 1, col = "#0000FF10",
+        ylim = range(-10, quantile(excess2020, c(0.1, 0.999)))) 
+matlines(is2020, t(apply(excess2020, 1, quantile, prob = c(0.1,0.9))), col = "black", lty = 2) 
+abline(h = 0) 
+quantile(apply(excess2020, 1, sum))
+```
+
+
+#Accidents
+```{r}
+dateSeq = sort(unique(x$date)) 
+table(diff(dateSeq))
+dateSeqInt = as.integer(dateSeq)
+x$dateInt = x$dateIid = as.integer(x$date)
+x$cos12 = cos(2 * pi * x$dateInt/365.25)
+x$sin12 = sin(2 * pi * x$dateInt/365.25)
+x$sin6 = sin(2 * 2 * pi * x$dateInt/365.25)
+x$cos6 = cos(2 * 2 * pi * x$dateInt/365.25) 
+x$dayOfYear = as.Date(gsub("^[[:digit:]]+", "0000",x$date))
+x$christmasBreak = (x$dayOfYear >= as.Date("0000/12/21")) |(x$dayOfYear <= as.Date("0000/01/12"))
+xSub = x[grepl("accidents", x$Cause, ignore.case = TRUE) & x$province == "Ontario", ]
+xPreCovid = xSub[xSub$date < as.Date("2020/02/01") & (!xSub$christmasBreak), ]
+
+library("INLA")
+
+resHere = inla(VALUE ~ cos12 + cos6 + sin12 + sin6 + 
+                 f(dateInt, model = "rw2", values = dateSeqInt,prior = "pc.prec", param = c(0.001, 0.5)) + 
+                 f(dateIid, values = dateSeqInt, prior = "pc.prec", param = c(0.0001, 0.5)), 
+               data = xPreCovid, family = "poisson", 
+               control.compute = list(config = TRUE), control.predictor = list(compute = TRUE))
+```
+
+```{r}
+matplot(resHere$.args$data$date, resHere$summary.fitted[, paste0(c(0.025, 0.975, 0.5), "quant")], type = "l",lty = c(2, 2, 1), col = "black", log = "y", ylim = range(xSub$VALUE))
+points(xSub$date, xSub$VALUE, col = "red") 
+points(xPreCovid$date, xPreCovid$VALUE, col = "blue") 
+
+matplot(dateSeq, resHere$summary.random$dateInt[, paste0(c(0.025,0.975, 0.5), "quant")], type = "l", lty = c(2,2, 1), col = "black")
+toPredict = cbind(`(Intercept):1` = 1, `cos12:1` = cos(2 *pi * dateSeqInt/365.25), `sin12:1` = sin(2 * pi * dateSeqInt/365.25), `cos6:1` = cos(2 * pi * dateSeqInt *2/365.25),`sin6:1` = sin(2 * pi * dateSeqInt *2/365.25))
+dateIntSeq = paste0("dateInt:", 1:length(dateSeqInt))
+dateIidSeq = paste0("dateIid:", 1:length(dateSeqInt))
+set.seed(123456)
+resSample = inla.posterior.sample(n = 100, resHere) 
+resSampleFitted = lapply(resSample, function(xx) {toPredict %*% xx$latent[colnames(toPredict), ] + xx$latent[dateIntSeq, ] + xx$latent[dateIidSeq,]})
+resSampleFitted = do.call(cbind, resSampleFitted) 
+resSampleLambda = exp(resSampleFitted)
+resSampleCount = matrix(rpois(length(resSampleLambda),
+                              resSampleLambda), nrow(resSampleLambda), ncol(resSampleLambda)) 
+matplot(dateSeq, resSampleCount, col ="#00000010",type = "l", lty = 1, log = "y")
+
+points(xSub[, c("date", "VALUE")], col = "red") 
+abline(v = as.Date("2020/03/01"), col = "yellow") 
+is2020 = dateSeq[dateSeq >= as.Date("2020/2/1")] 
+sample2020 = resSampleCount[match(is2020, dateSeq),]
+count2020 = xSub[match(is2020, xSub$date), "VALUE"]
+excess2020 = count2020 - sample2020
+
+matplot(is2020, excess2020, type = "l", lty = 1, col = "#0000FF10",
+        ylim = range(-10, quantile(excess2020, c(0.1, 0.999)))) 
+matlines(is2020, t(apply(excess2020, 1, quantile, prob = c(0.1,0.9))), col = "black", lty = 2) 
+abline(h = 0) 
+quantile(apply(excess2020, 1, sum))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
